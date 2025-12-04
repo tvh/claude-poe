@@ -4,17 +4,18 @@ This project enables Claude Code to use Poe.com's API by running a local LiteLLM
 
 ## Why This Is Needed
 
-Claude Code uses Anthropic's API format, while Poe.com uses OpenAI's format. They differ in:
-- **Authentication**: Claude Code sends `x-api-key` header, Poe expects `Authorization: Bearer`
-- **Request format**: Anthropic Messages API vs OpenAI Chat Completions API
+Claude Code uses Anthropic's API format, while Poe.com uses OpenAI's format. LiteLLM handles the translation automatically:
+- **Authentication**: `x-api-key` → `Authorization: Bearer`
+- **Request format**: Anthropic Messages API → OpenAI Chat Completions API
 - **Response structure**: Different JSON structures
 
-LiteLLM handles all of this translation automatically.
+Tailscale provides secure remote access without exposing the proxy to the internet.
 
 ## Prerequisites
 
 - Docker and Docker Compose installed
 - Poe API key from https://poe.com/api_key
+- Tailscale account (free) - https://tailscale.com
 - Claude Code installed
 
 ## Quick Start
@@ -38,6 +39,9 @@ LITELLM_MASTER_KEY=sk-$(openssl rand -hex 32)
 
 # Port (default: 4000)
 LITELLM_PORT=4000
+
+# Get Tailscale auth key from https://login.tailscale.com/admin/settings/keys
+TAILSCALE_AUTHKEY=tskey-auth-xxxxx
 ```
 
 ### 2. Start the Proxy
@@ -46,16 +50,37 @@ LITELLM_PORT=4000
 docker compose up -d
 ```
 
-### 3. Configure Claude Code
+### 3. Get Tailscale Machine Name
+
+On the server where the proxy is running, get the Tailscale machine name:
+
+```bash
+tailscale status
+```
+
+Look for the machine name (e.g., `litellm-proxy.tail1234.ts.net`) or IP (e.g., `100.x.y.z`).
+
+### 4. Configure Claude Code
+
+On your client machine (where Claude Code runs), install Tailscale:
+
+```bash
+# Install and connect to Tailscale
+tailscale up
+```
 
 Add these environment variables to your `~/.zshrc`:
 
 ```bash
-export ANTHROPIC_BASE_URL=http://localhost:4000
+# Use full Tailscale hostname or IP
+export ANTHROPIC_BASE_URL=http://litellm-proxy.tail1234.ts.net:4000
 export ANTHROPIC_AUTH_TOKEN=sk-your_actual_master_key_here
 ```
 
-Replace `sk-your_actual_master_key_here` with your actual `LITELLM_MASTER_KEY` from `.env`. Adjust the URL if using a different port or host.
+**Important:**
+- Replace `litellm-proxy.tail1234.ts.net` with your actual Tailscale hostname from step 3
+- Or use the Tailscale IP: `http://100.x.y.z:4000`
+- Replace `sk-your_actual_master_key_here` with your `LITELLM_MASTER_KEY` from `.env`
 
 Then reload your shell:
 
@@ -63,13 +88,13 @@ Then reload your shell:
 source ~/.zshrc
 ```
 
-### 4. Test It
+### 5. Test It
 
 ```bash
 claude --verbose
 ```
 
-You should see Claude Code connecting to your proxy URL, which then forwards requests to Poe.
+You should see Claude Code connecting to your Tailscale URL, which then forwards requests to Poe.
 
 ## Available Models
 
@@ -86,10 +111,20 @@ Configure Claude Code per-project using `.claude/settings.local.json`:
 
 ```json
 {
-  "anthropicBaseUrl": "http://localhost:4000",
+  "anthropicBaseUrl": "http://litellm-proxy.tail1234.ts.net:4000",
   "anthropicAuthToken": "sk-your_actual_master_key_here"
 }
 ```
+
+Replace with your actual Tailscale hostname or IP.
+
+### Accessing from Multiple Devices
+
+All devices on your Tailscale network can access the proxy:
+
+1. Install Tailscale on each device
+2. Connect to your Tailscale network: `tailscale up`
+3. Use the Tailscale hostname: `http://litellm-proxy.tail1234.ts.net:4000`
 
 ### Custom Port
 
@@ -98,19 +133,6 @@ Edit `LITELLM_PORT` in `.env`, then restart:
 ```bash
 docker compose down && docker compose up -d
 ```
-
-### Remote Deployment
-
-For production deployments:
-
-1. Deploy the container on your server
-2. Use HTTPS with a reverse proxy (nginx, Caddy, Traefik)
-3. Bind to localhost: `127.0.0.1:${LITELLM_PORT}:4000` in `docker-compose.yml`
-4. Configure Claude Code to use your server URL:
-   ```bash
-   export ANTHROPIC_BASE_URL=https://your-server.com
-   export ANTHROPIC_AUTH_TOKEN=sk-your_master_key
-   ```
 
 ## Management Commands
 
@@ -121,9 +143,12 @@ docker compose up -d
 # View logs
 docker compose logs -f litellm
 
-# Check status
+# Check status (from server)
 docker compose ps
 curl http://localhost:4000/health -H "Authorization: Bearer sk-your_master_key"
+
+# Check status (from client via Tailscale)
+curl http://litellm-proxy.tail1234.ts.net:4000/health -H "Authorization: Bearer sk-your_master_key"
 
 # Restart
 docker compose restart
@@ -140,6 +165,8 @@ docker compose down
 - View logs: `docker compose logs -f litellm`
 
 **Connection refused:**
+- Ensure Tailscale is running on both server and client: `tailscale status`
+- Verify you're using the correct Tailscale hostname or IP
 - Ensure container is running: `docker compose ps`
 - Check correct port: verify `LITELLM_PORT` in `.env`
 - View logs: `docker compose logs`
@@ -153,8 +180,8 @@ claude --verbose
 ## Project Structure
 
 ```
-├── docker-compose.yml      # Docker configuration
-├── litellm-config.yaml     # Model routing configuration
+├── docker-compose.yml      # Docker configuration with Tailscale
+├── litellm-config.yaml    # Model routing configuration
 ├── .env.template          # Environment template
 ├── .env                    # Your secrets (gitignored)
 └── README.md
@@ -162,13 +189,15 @@ claude --verbose
 
 ## How It Works
 
-1. Claude Code sends requests to your LiteLLM proxy (e.g., `http://localhost:4000`)
+1. Claude Code connects to `http://litellm-proxy.tail1234.ts.net:4000` via Tailscale (encrypted tunnel)
 2. LiteLLM receives Anthropic Messages format request
 3. LiteLLM translates to OpenAI Chat Completions format
 4. LiteLLM forwards to Poe.com with Bearer token authentication
 5. Poe processes request and returns OpenAI format response
 6. LiteLLM translates back to Anthropic format
 7. Claude Code receives Anthropic format response
+
+**Security:** The proxy is only accessible via localhost (on server) or Tailscale network. It's never exposed to the public internet.
 
 ## Adding Models
 
@@ -186,10 +215,11 @@ See [Poe's model list](https://creator.poe.com/docs/external-applications/openai
 
 ## Security
 
-- **Never commit `.env`** - contains sensitive keys
+- **Never commit `.env`** - contains sensitive keys (Poe API, master key, Tailscale auth key)
+- **Network isolation** - proxy only accessible via localhost and Tailscale network
+- **Encrypted connections** - Tailscale provides WireGuard encryption
+- **No public exposure** - proxy never exposed to the internet
 - **Master key** - required for all proxy requests
-- **Network binding** - default is all interfaces (`0.0.0.0`). For local-only, use `127.0.0.1:${LITELLM_PORT}:4000`
-- **Production** - use HTTPS with reverse proxy (nginx, Caddy)
 - **Rate limits** - Poe API: 500 requests/minute
 
 ## Links
@@ -197,3 +227,4 @@ See [Poe's model list](https://creator.poe.com/docs/external-applications/openai
 - [Poe API Docs](https://creator.poe.com/docs/external-applications/openai-compatible-api)
 - [LiteLLM Docs](https://docs.litellm.ai/)
 - [Claude Code Docs](https://code.claude.com/docs)
+- [Tailscale](https://tailscale.com) - Secure remote access
