@@ -8,19 +8,23 @@ services:
       - TS_AUTHKEY=${TAILSCALE_AUTHKEY}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_USERSPACE=false
+      - TS_ENABLE_HEALTH_CHECK=true
     volumes:
       - tailscale-state:/var/lib/tailscale
+    devices:
       - /dev/net/tun:/dev/net/tun
     cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
+      - net_admin
+    healthcheck:
+      test: ["CMD", "tailscale", "status", "--peers=false"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 30s
     restart: unless-stopped
-    network_mode: host
 
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
-    ports:
-      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"  # Only accessible via localhost/Tailscale
     volumes:
       - ./litellm-config.yaml:/app/config.yaml
     env_file:
@@ -28,7 +32,9 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "8"]
     restart: unless-stopped
     depends_on:
-      - tailscale
+      tailscale:
+        condition: service_healthy
+    network_mode: service:tailscale
 
 volumes:
   tailscale-state:
